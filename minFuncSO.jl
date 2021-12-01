@@ -318,11 +318,6 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
         
         # check for lack of progress on objective value
         diffF = abs(fref-f)
-        #if f > progTol
-        #    diffF/= f
-        #else
-        #    diffF = 0
-        #end
         if diffF < progTol
             if verbose
                 @printf("method=%d, lsType=%d: Stopped making progress met at %dth iter. 
@@ -519,12 +514,6 @@ function minFuncNonOpt(funObj,funObjNoGrad,w0,X;method=1,maxIter=100,maxLsIter=5
     	fValues[nIter+1,1] = f
     	tValues[nIter+1,1] = currTs 
 
-        #@show(size(g))
-        #@show(size(g_prev))
-        #@show(w)
-        #@show(w_prev)
-        #@show(size(w))
-        #@show(size(w_prev))
     	updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,DiffIterates,DiffGrads)
     	
     	# line search failed 
@@ -546,11 +535,6 @@ function minFuncNonOpt(funObj,funObjNoGrad,w0,X;method=1,maxIter=100,maxLsIter=5
         
         # check for lack of progress
         diffF = abs(fref-f)
-        #if f > progTol
-        #    diffF/= f
-        #else
-        #    diffF = 0.0
-        #end
         if diffF < progTol
             if verbose
                 @printf("method=%d, lsType=%d: Stopped making progress met at %dth iter. fref=%f, f=%f\n",
