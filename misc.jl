@@ -76,6 +76,7 @@ function updateDiffs(i,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,
 end
 
 # updates memory for minFuncNonOpt
+#=
 function updateDiffs(i,lBfgsSize,g_prev,g,w_prev,w,DiffIterates,DiffGrads)
     j = mod(i,lBfgsSize)
     if j==0
@@ -84,3 +85,4 @@ function updateDiffs(i,lBfgsSize,g_prev,g,w_prev,w,DiffIterates,DiffGrads)
     DiffIterates[j] = w.-w_prev
     DiffGrads[j] = g.-g_prev
 end
+=#

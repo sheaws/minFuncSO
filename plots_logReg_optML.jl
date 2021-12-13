@@ -156,29 +156,18 @@ for a=1:nDatasets
         if verbose
             @printf("Running setting %d: method=%d, lsType=%d\n",b,configDF[b,:].method,configDF[b,:].lsType)
         end
-        if convert(Bool,configDF[b,:].nonOpt)
-            time_start = time_ns() # Start timer
-            (w,f,nObjEvals,nGradEvals,nIter,nLsIter,nMatMult,fValues,tValues) = minFuncNonOpt(funObjForNonOpt,
-                funObjNoGradForNonOpt,w0,X,method=configDF[b,:].method,maxIter=datasets[a].maxPasses,
-                maxLsIter=datasets[a].maxLsIter,maxTimeInSec=datasets[a].maxTimeInSec,optTol=optTol,progTol=progTol,
-                lsInit=configDF[b,:].lsInit,nFref=configDF[b,:].nFref,lsType=configDF[b,:].lsType,c1=c1,c2=c2,
-                lsInterpType=configDF[b,:].lsInterp,lBfgsSize=configDF[b,:].lbfgsSize,
-                derivativeCheck=convert(Bool,configDF[b,:].derivCheck),numDiff=convert(Bool,configDF[b,:].numDiff),
-                verbose=verbose)
-            nSeconds = (time_ns()-time_start)/1.0e9 # End timer
-        else
-            time_start = time_ns() # Start timer
-            (w,f,nObjEvals,nGradEvals,nIter,nLsIter,nMatMult,fValues,tValues) = minFuncSO(objFunc,gradFunc,w0,X,
-                method=configDF[b,:].method,maxIter=datasets[a].maxPasses,maxLsIter=datasets[a].maxLsIter,
-                maxTimeInSec=datasets[a].maxTimeInSec,optTol=optTol,progTol=progTol,lsInit=configDF[b,:].lsInit,
-                nFref=configDF[b,:].nFref,lsType=configDF[b,:].lsType,
-                c1=c1,c2=c2,lsInterpType=configDF[b,:].lsInterp,lBfgsSize=configDF[b,:].lbfgsSize,
-                momentumDirections=configDF[b,:].momentumDirs,ssMethod=configDF[b,:].ssMethod,
-                ssLS=configDF[b,:].ssLS,ssRelStop=convert(Bool,configDF[b,:].ssRelStop),
-                ssOneDInit=convert(Bool,configDF[b,:].ssOneDInit),derivativeCheck=convert(Bool,configDF[b,:].derivCheck),
-                numDiff=convert(Bool,configDF[b,:].numDiff),verbose=verbose,funObjForT=funObjForT)
-            nSeconds = (time_ns()-time_start)/1.0e9 # End timer
-        end
+        time_start = time_ns() # Start timer
+        (w,f,nObjEvals,nGradEvals,nIter,nLsIter,nMatMult,fValues,tValues) = minFuncSO(objFunc,gradFunc,w0,X,
+            method=configDF[b,:].method,maxIter=datasets[a].maxPasses,maxLsIter=datasets[a].maxLsIter,
+            maxTimeInSec=datasets[a].maxTimeInSec,optTol=optTol,progTol=progTol,lsInit=configDF[b,:].lsInit,
+            nFref=configDF[b,:].nFref,lsType=configDF[b,:].lsType,
+            c1=c1,c2=c2,lsInterpType=configDF[b,:].lsInterp,lBfgsSize=configDF[b,:].lbfgsSize,
+            momentumDirections=configDF[b,:].momentumDirs,ssMethod=configDF[b,:].ssMethod,
+            ssLS=configDF[b,:].ssLS,ssRelStop=convert(Bool,configDF[b,:].ssRelStop),
+            ssOneDInit=convert(Bool,configDF[b,:].ssOneDInit),derivativeCheck=convert(Bool,configDF[b,:].derivCheck),
+            numDiff=convert(Bool,configDF[b,:].numDiff),verbose=verbose,funObjForT=funObjForT,
+            funObj=funObjForNonOpt,funObjNoGrad=funObjNoGradForNonOpt,nonOpt=convert(Bool,configDF[b,:].nonOpt))
+        nSeconds = (time_ns()-time_start)/1.0e9 # End timer
         
         if verbose
             @printf("f=%f, %f seconds, %d calls to f, %d calls to g, %d iters, %d LS iters, %d matrix-vector

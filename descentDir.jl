@@ -91,73 +91,56 @@ end
 
 # Line Search Newton-CG/ truncated Newton
 #  i.e., truncated CG for an approximation of Newton directions
-function newtonCG(g,maxIter,objFunc,gradFunc,numDiff,w,X;k=nothing)
+# to run version that is not optimized for linear structure, set nonOpt=true and
+#  pass in funObj (preferably version with no gradient calculation) to objFunc
+#  pass in funObj (with gradient calculation) to gradFunc
+function newtonCG(g,maxIter,objFunc,gradFunc,numDiff,w,X;k=nothing,nonOpt=false)
+    (m,n) = size(X)
+    nOE = 0
+    nGE = 0
+    nMM = 0
+    Xw_s = fill(0.0,m)
+    z = zeros(length(g))
+    
     normg = norm(g)
     eps = min(0.5,sqrt(normg))*normg # forcing sequence * norm(g)
-    z = zeros(length(g))
     r = g
     d = -g
     for j in 1:maxIter
         s = 2*sqrt(1e-12)*(1+norm(w))/norm(d)
-        w_s=(w+s*d)
-        Xw_s = X*w_s
-        if numDiff
-            g_v = numGrad(objFunc,w_s,X,Xw_s,k=k)
-        else
-            g_v = X'*gradFunc(Xw_s,konst=k)
-        end
-        Bd = (g_v-g)/s 
-        dTBd = dot(d',Bd)
-        
-        if dTBd <= 1e-16 # B has negative eigenvalues
-            if j==1
-                return (-g,j)
-            else
-                return (z,j)
-            end
-        end
-        
-        normr = dot(r',r)
-        alpha = normr/dTBd
-        z = z + alpha*d
-        r_new = r+ alpha*Bd
-        
-        norm2r_new = dot(r_new',r_new)
-        if sqrt(norm2r_new) < eps
-            return (z,j)
-        end
-        
-        beta = norm2r_new/normr
-        d = -r_new + beta*d
-        r = r_new
-    end
-    return (z,maxIter)
-end
+        w_s = w + s*d
 
-# Line Search Newton-CG/ truncated Newton
-#  i.e., truncated CG for an approximation of Newton directions
-function newtonCG(g,maxIter,funObj,w,X,numDiff)
-    normg = norm(g)
-    eps = min(0.5,sqrt(normg))*normg # forcing sequence * norm(g)
-    z = zeros(length(g))
-    r = g
-    d = -g
-    for j in 1:maxIter
-        s = 2*sqrt(1e-12)*(1+norm(w))/norm(d)
-        w_s = w+s*d
-        if numDiff
-            g_v = numGrad(funObj,w_s,X)
+        if nonOpt
+            if numDiff
+                g_v = numGrad(objFunc,w_s,X)
+                nOE += 2*n
+                nMM += 2*n
+            else
+                _,g_v = gradFunc(w_s,X)
+                nOE += 1
+                nGE += 1
+                nMM += 2
+            end
         else
-            _,g_v = funObj(w_s,X)
+            Xw_s = X*w_s
+            nMM += 1
+            if numDiff
+                g_v = numGrad(objFunc,w_s,X,Xw_s,k=k)
+                nOE += 2*n
+            else
+                g_v = X'*gradFunc(Xw_s,konst=k)
+                nMM += 1
+                nGE += 1
+            end
         end
+        
         Bd = (g_v-g)/s 
         dTBd = dot(d',Bd)
-        
         if dTBd <= 1e-16 # B has negative eigenvalues
             if j==1
-                return (-g,j)
+                return (-g,j,nOE,nGE,nMM)
             else
-                return (z,j)
+                return (z,j,nOE,nGE,nMM)
             end
         end
         
@@ -168,12 +151,12 @@ function newtonCG(g,maxIter,funObj,w,X,numDiff)
         
         norm2r_new = dot(r_new',r_new)
         if sqrt(norm2r_new) < eps
-            return (z,j)
+            return (z,j,nOE,nGE,nMM)
         end
         
         beta = norm2r_new/normr
         d = -r_new + beta*d
         r = r_new
     end
-    return (z,maxIter)
+    return (z,maxIter,nOE,nGE,nMM)
 end
