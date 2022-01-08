@@ -3,7 +3,7 @@ include("misc.jl")
 include("linesearch.jl")
 include("descentDir.jl")
 
-function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxLsIter=50,maxTimeInSec=600,optTol=1e-5,
+function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxLsIter=50,maxTimeInSec=600,optTol=1e-5,
  progTol=1e-9,lsInit=0,nFref=1,lsType=0,c1=1e-4,c2=0.9,lsInterpType=0,lBfgsSize=30,momentumDirections=0,
  ssMethod=0,ssLS=0,ssRelStop=true,ssOneDInit=true,derivativeCheck=false,numDiff=false,nonOpt=false,verbose=false,
  funObjForT=nothing,funObj=nothing,funObjNoGrad=nothing)
@@ -24,28 +24,24 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
     Xw = fill(0.0, m)
     if nonOpt
         if numDiff
-            f,_ = funObjNoGrad(w,X)
-            g = numGrad(funObjNoGrad,w,X)
-            nMatMult += 2*n+1
+            f,_,nmm = funObjNoGrad(w,X); nMatMult += nmm
+            g,nmm = numGrad(funObjNoGrad,w,X); nMatMult += nmm
             nObjEvals += 2*n+1            
         else
-            f,g = funObj(w,X)
-            nMatMult += 2
+            f,g,nmm = funObj(w,X); nMatMult += nmm
             nObjEvals += 1
             nGradEvals += 1
         end
     else
-        Xw = X*w
-        nMatMult += 1
-        f = objFunc(Xw,konst=konst)
+        Xw = X*w; nMatMult += 1
+        f,nmm = objFunc(Xw,w,konst=konst); nMatMult += nmm
         nObjEvals += 1	
         if numDiff
-            g = numGrad(objFunc,w,X,Xw,k=konst)
+            g,nmm = numGrad(objFunc,w,X,Xw,k=konst); nMatMult += nmm
             nObjEvals += 2*n
         else
-            g = X'*gradFunc(Xw,konst=konst)
+            g,nmm = gradFunc(Xw,w,X,konst=konst); nMatMult += nmm
             nGradEvals += 1
-            nMatMult += 1
         end        
     end
     fValues[1,1] = f
@@ -56,9 +52,9 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
         	@printf("Not doing derivative check with nummDiff on\n")
     	else
         	if nonOpt
-            	g2 = numGrad(funObjNoGrad,w,X)
+            	g2,nmm = numGrad(funObjNoGrad,w,X); nMatMult += nmm
         	else
-        		g2 = numGrad(objFunc,w,X,Xw,k=konst)
+        		g2,nmm = numGrad(objFunc,w,X,Xw,k=konst); nMatMult += nmm
         	end
     		if maximum(abs.(g-g2)) > optTol
     			@printf("User and numerical derivatives differ%s\n",string([g g2]))
@@ -168,8 +164,7 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
     	
     	Xd = fill(0.0, m)
     	if !nonOpt
-        	Xd = X*d
-        	nMatMult += 1
+        	Xd = X*d; nMatMult += 1
         end
     	w_prev = w
     	Xw_prev = Xw
@@ -178,11 +173,11 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
     	w = w_prev + t*d # take step
     	Xw = Xw_prev + t*Xd
     	if nonOpt
-        	f,_ = funObjNoGrad(w,X)
-        	nMatMult += 1
+        	f,_,nmm = funObjNoGrad(w,X)
     	else
-            f = objFunc(Xw,konst=konst)
+            f,nmm = objFunc(Xw,w,konst=konst)
         end
+        nMatMult += nmm
         nObjEvals += 1
         
         # update the list of most recent fVals and get back the largest f value stored in history
@@ -208,7 +203,7 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
                     verbose=verbose,maxLsIter=maxLsIter,nonOpt=true)
             else            
                 (t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
-                    lsWolfe(objFunc,gradFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,gTd,d,
+                    lsWolfe(objFunc,fPrimeFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,gTd,d,
                     konst=konst,verbose=verbose,maxLsIter=maxLsIter)
             end
         elseif lsType==3 || lsType==4 || lsType==5
@@ -227,8 +222,7 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
                     XD[:,a] = XDiffIterates[mod(nIter-2,lBfgsSize)+1]
                 elseif lsType==5
                     D[:,a] = dTN
-                    XD[:,a] = X*dTN
-                    nMatMult += 1
+                    XD[:,a] = X*dTN; nMatMult += 1
                 end
             end
             
@@ -238,7 +232,7 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
                         norm(w,2),norm(w_prev,2))
                 end          
                 (ts,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) =
-                    lsDDir(objFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,nIter,gradNorm,gTd,c1,c2,
+                    lsDDir(objFunc,fPrimeFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,nIter,gradNorm,gTd,c1,c2,
                     ssMethod=ssMethod,ssLS=ssLS,verbose=verbose,maxLsIter=maxLsIter,relativeStopping=ssRelStop,
                     oneDInit=ssOneDInit)               
                 if verbose
@@ -251,7 +245,7 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
                         norm(w_prev,2))
                 end
                 (ts,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) =
-                    lsDDir(funObjNoGrad,funObj,XD,D,X,Xw_prev,w_prev,f_prev,g,nIter,gradNorm,gTd,c1,c2,
+                    lsDDir(funObjNoGrad,funObj,funObj,XD,D,X,Xw_prev,w_prev,f_prev,g,nIter,gradNorm,gTd,c1,c2,
                     ssMethod=ssMethod,ssLS=ssLS,verbose=verbose,maxLsIter=maxLsIter,relativeStopping=ssRelStop,
                     oneDInit=ssOneDInit,nonOpt=true,funObjForT=funObjForT)
                 if verbose
@@ -326,25 +320,23 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
         g_prev = g 
         if nonOpt       
             if numDiff
-                g = numGrad(funObjNoGrad,w,X)
-                nMatMult += 2*n
+                g,nmm = numGrad(funObjNoGrad,w,X)
                 nObjEvals += 2*n            
             else
-                _,g = funObj(w,X)
-                nMatMult += 2
+                _,g,nmm = funObj(w,X)
                 nObjEvals += 1
                 nGradEvals += 1
             end
         else
             if numDiff
-                g = numGrad(objFunc,w,X,Xw,k=konst)
+                g,nmm = numGrad(objFunc,w,X,Xw,k=konst)
                 nObjEvals += 2*n
             else
-                g = X'*gradFunc(Xw,konst=konst)
-            	nMatMult += 1
+                g,nmm =gradFunc(Xw,w,X,konst=konst)
             	nGradEvals += 1
             end
         end
+        nMatMult += nMM        
         
         # update memory
         if verbose
@@ -352,18 +344,19 @@ function minFuncSO(objFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxL
                 norm(w,1))
         end
         
-        if lsType==3 || lsType==4 || lsType==5  #CHECK
-        	updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates,
+        if lsType==3 || lsType==4 || lsType==5
+        	nmm = updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates,
             	normalizeColumns=true,calcXDiffIterates=true)
-        	nMatMult += 1 
         else
-            updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates)
+            nmm = updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates)
         end
+        
     	if verbose
         	j = mod(nIter - 1,lBfgsSize)+1
         	@printf("++++++ after updateDiffs: 1-norm of DiffIerates[%d]=%f.\n",j,
             	norm(DiffIterates[j],1))
     	end
+        nMatMult += nMM
 
     	# check optimality conditions   	
     	gradNorm = norm(g,Inf)

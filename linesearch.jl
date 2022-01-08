@@ -29,7 +29,6 @@ function getAndSetLSFref(nFref,oldFvals,i,f_prev)
     if j== 0
         j = nFref
     end
-
     oldFvals[j]=f_prev
     return findmax(oldFvals)    
 end
@@ -51,7 +50,6 @@ function lsInterpolate(lsInterpType,f,fref,t,g;verbose=false)
             return (t*0.5)
         end
     end
-    
     return t
 end
 
@@ -85,13 +83,13 @@ function lsArmijo(objFunc,X,Xw_prev,Xd0,w_prev,t0,c1,f0,f_prev,fref,g_prev,gTd,d
         # calculate f at new point
         w = w_prev + t*d
         if nonOpt
-            f,_ = objFunc(w,X)
-            nMatMult += 1
+            f,_,nmm = objFunc(w,X)
         else
             Xw = Xw_prev + t*Xd0
-            f = objFunc(Xw,konst=konst)
+            f,nmm = objFunc(Xw,w,konst=konst)
         end
         nObjEvals += 1
+        nMatMult += nmm
         thresh = fref + t*c1gTd 
         
         if verbose
@@ -106,7 +104,7 @@ function lsArmijo(objFunc,X,Xw_prev,Xd0,w_prev,t0,c1,f0,f_prev,fref,g_prev,gTd,d
     end
 
     if verbose
-        @printf("lsArmijo returns t=%f, f=%f, nLsIter=%d\n",t,f,nLsIter)
+        @printf("lsArmijo returns t=%f, f=%f, nLsIter=%d, size(w)=%s\n",t,f,nLsIter,size(w))
     end
     return (t,f,w,Xw,lsFailed,nLsIter,nObjEvals,0,nMatMult)
 end
@@ -114,9 +112,11 @@ end
 ### strong Wolfe conditions ###
 # to run version that is not optimized for linear structure, set nonOpt=true and
 #  pass in funObj (preferably version with no gradient calculation) to objFunc
-#  pass in funObj (with gradient calculation) to gradFunc
+#  pass in funObj (with gradient calculation) to fPrimeFunc. unlike the optimized version,
+#   this calculates gradient and not fPrime. Wolfe conditions do not require gradients,
+#   only directional derivatives. thus optimized version uses fPrimeFunc and not gradFunc.
 #  Xw_prev and Xd are not used but need to be passed in with the correct dims
-function lsWolfe(objFunc,gradFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,gTd,d;
+function lsWolfe(objFunc,fPrimeFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,gTd,d;
  konst=nothing,verbose=false,maxLsIter=25,nonOpt=false)
     (m,n) = size(X)
     epsilon = 1e-6
@@ -150,30 +150,32 @@ function lsWolfe(objFunc,gradFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,g
         
         if nonOpt
             if numDiff
-                f,_ = objFunc(w,X)
-                g_new = numGrad(objFunc,w,X)
+                f,_,nmm = objFunc(w,X); nMatMult += nmm
+                g_new,nmm = numGrad(objFunc,w,X); nMatMult += nmm
                 nObjEvals += 2*n+1
-                nMatMult += 2*n+1
             else
-                f,g_new = gradFunc(w,X)
+                f,g_new,nmm = fPrimeFunc(w,X); nMatMult += nmm
                 nObjEvals += 1
                 nGradEvals += 1
-                nMatMult += 2
             end
             gTd_new = dot(g_new,d)
         else
             Xw = Xw_prev + t*Xd
-            f = objFunc(Xw,konst=konst)
+            f,nmm = objFunc(Xw,w,konst=konst); nMatMult += nmm
             nObjEvals += 1
             if numDiff
-                g_new = numGrad(objFunc,w,X,Xw,k=konst)
+                g_new,nmm = numGrad(objFunc,w,X,Xw,k=konst)
                 nObjEvals += 2*n
                 gTd_new = dot(g_new,d)
             else
-                gradF = gradFunc(Xw)
+                fPrime,addComp,nmm = fPrimeFunc(Xw,w)
                 nGradEvals += 1
-                gTd_new = dot(gradF,Xd) #g^Td=(X^TgradF)^Td = gradF^T(Xd)
+                gTd_new = dot(fPrime,Xd)
+                if addComp!= nothing
+                    gTd_new += dot(addComp,d) #g^Td=((X^TfPrime)+addComp)^Td = gradF^T(Xd)+addComp^Td
+                end
             end
+            nMatMult += nmm
         end
         
         # condition 1 for exiting bracketing phase: 
@@ -232,41 +234,43 @@ function lsWolfe(objFunc,gradFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,g
         w = w_prev + t*d
         if nonOpt
             if numDiff
-                f,_ = objFunc(w,X)
-                g_new = numGrad(objFunc,w,X)
+                f,_,nmm = objFunc(w,X); nMatMult += nmm
+                g_new,nmm = numGrad(objFunc,w,X); nMatMult += nmm
                 nObjEvals += 2*n+1
-                nMatMult += 2*n+1
             else
-                f,g_new = gradFunc(w,X)
+                f,g_new,nmm = fPrimeFunc(w,X); nMatMult += nmm
                 nObjEvals += 1
                 nGradEvals += 1
-                nMatMult += 2
             end
             gTd_new = dot(g_new,d)
         else
             Xw = Xw_prev + t*Xd
-            f = objFunc(Xw,konst=konst)
+            f,nmm = objFunc(Xw,w,konst=konst); nMatMult += nmm
             if numDiff
-                g_new = numGrad(objFunc,w,X,Xw,k=konst)
+                g_new,nmm = numGrad(objFunc,w,X,Xw,k=konst)
                 nObjEvals += 2*n
                 gTd_new = dot(g_new,d)           
             else
-                gradF = gradFunc(Xw)
+                gradF,addComp,nmm = fPrimeFunc(Xw,w)
                 nGradEvals += 1
-                gTd_new = dot(gradF,Xd)        
+                gTd_new = dot(gradF,Xd)
+                if addComp!=nothing
+                    gTd_new += dot(addComp,d)        
+                end
             end
             nObjEvals += 1
+            nMatMult += nmm
         end
         thresh = f_prev + t*c1gTd
         
         # condition 1
+        wLo = w_prev+alphaLo*d
         if nonOpt
-            wLo = w_prev+alphaLo*d
-            fLo,_ = objFunc(wLo,X)
-            nMatMult += 1
+            fLo,_,nmm = objFunc(wLo,X)
         else
-            fLo = objFunc(Xw_prev+alphaLo*Xd,konst=konst)
+            fLo,nmm = objFunc(Xw_prev+alphaLo*Xd,wLo,konst=konst)
         end
+        nMatMult += nmm
         nObjEvals += 1
         if f > thresh || f >= fLo
             if verbose
@@ -324,7 +328,7 @@ end
 #  pass in funObj (preferably version with no gradient calculation) to objFunc
 #  pass in funObj (with gradient calculation) to gradFunc
 #  Xw_prev and Xd are not used but need to be passed in with the correct dims
-function lsDDir(objFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,outerIter,gradNorm,gTd,c1,c2;
+function lsDDir(objFunc,fPrimeFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,outerIter,gradNorm,gTd,c1,c2;
  konst=nothing,ssMethod=0,ssLS=0,verbose=false,maxLsIter=25,progTol=1e-9,optTol=1e-9,
  relativeStopping=true,oneDInit=true,nonOpt=false,funObjForT=nothing)
     lsFailed = false
@@ -335,14 +339,19 @@ function lsDDir(objFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,outerIter,gradNo
     (m,n) = size(X)
     (_,k) = size(XD)
     
-    if verbose && !nonOpt
-        normKonst = -1.0
-        f_prev = objFunc(Xw_prev,konst=konst)
-        if konst != nothing
-            normKonst = norm(konst,2)
+    if verbose
+        if nonOpt
+            @printf("lsDDir(nonOpt) at %dth outer iter. initial f_prev=%f. norm(w_prev,2)=%f, 
+                k=%d, size(w_prev)=%s\n",outerIter,f_prev,norm(w_prev,2),k,size(w_prev))
+        else
+            normKonst = -1.0
+            f_prev,nmm = objFunc(Xw_prev,w_prev,konst=konst); nMatMult += nmm
+            if konst != nothing
+                normKonst = norm(konst,2)
+            end
+            @printf("lsDDir(opt) at %dth outer iter. initial f_prev=%f. norm(w_prev,2)=%f, 
+                k=%d, norm(konst,2)=%f\n",outerIter,f_prev,norm(w_prev,2),k,normKonst)
         end
-        @printf("lsDDir(opt) at %dth outer iter. initial f_prev=%f. norm(w_prev,2)=%f, 
-            k=%d, norm(konst,2)=%f\n",outerIter,f_prev,norm(w_prev,2),k,normKonst)
     end
     
     # call minFunc on f(X(w_prev+Dt)) 
@@ -360,7 +369,7 @@ function lsDDir(objFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,outerIter,gradNo
     if oneDInit
         if ssLS==1            
             (t0,f,_,_,lsFailed,nLsI,nOE,nGE,nMM) = 
-                lsWolfe(objFunc,gradFunc,false,X,Xw_prev,XD[:,1],w_prev,c1,c2,f_prev,f_prev,g,gTd,D[:,1],
+                lsWolfe(objFunc,fPrimeFunc,false,X,Xw_prev,XD[:,1],w_prev,c1,c2,f_prev,f_prev,g,gTd,D[:,1],
                 konst=konst,verbose=verbose,maxLsIter=maxLsIter,nonOpt=nonOpt)
         else
             (t0,f,_,_,lsFailed,nLsI,nOE,nGE,nMM) = 
@@ -380,12 +389,12 @@ function lsDDir(objFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,outerIter,gradNo
     if nonOpt
         # function value and gradient wrt step sizes used for non-opt minFuncSO
         funObj(t,X) = funObjForT(t,D,w_prev,X)
-        (t,f,nOE,nGE,nIter,nLsI,nMM,_,_) = minFuncSO(funObj,funObj,t,X,
+        (t,f,nOE,nGE,nIter,nLsI,nMM,_,_) = minFuncSO(funObj,funObj,funObj,t,X,
             method=ssMethod,maxIter=max(maxLsIter-nLsIter,1),nonOpt=true,
             funObj=funObj,funObjNoGrad=funObj,
             lsInit=0,lsType=ssLS,c1=c1,verbose=verbose,progTol=progTol,optTol=optTol)
     else
-        (t,f,nOE,nGE,nIter,nLsI,nMM,_,_) = minFuncSO(objFunc,gradFunc,t,XD,
+        (t,f,nOE,nGE,nIter,nLsI,nMM,_,_) = minFuncSO(objFunc,fPrimeFunc,gradFunc,t,XD,
             konst=konst2,method=ssMethod,maxIter=max(maxLsIter-nLsIter,1),
             lsInit=0,lsType=ssLS,c1=c1,verbose=verbose,progTol=progTol,optTol=optTol)
     end
@@ -395,8 +404,7 @@ function lsDDir(objFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,outerIter,gradNo
     nGradEvals += nGE
     nMatMult += nMM
     w = w_prev + D*t 
-    Xw = X*w  
-    nMatMult += 1
+    Xw = X*w; nMatMult += 1
     
     if verbose
         @printf("  after calling minFunc. f=%f, norm(Xw,2)=%f\n t: %s\n",f,norm(Xw,2),string(t))

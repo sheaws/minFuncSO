@@ -62,7 +62,7 @@ function lbfgs(g,i,DiffIterates,DiffGrads)
     for j in 1:m
         k = mod(i - j,m)
         if k < 1
-            k = k + m
+            k += m
         end
         rhos[k] = 1 ./ dot(DiffGrads[k]',DiffIterates[k])
         alphas[k] = rhos[k] * dot(DiffIterates[k],q)
@@ -72,7 +72,7 @@ function lbfgs(g,i,DiffIterates,DiffGrads)
     n = length(g)
     j = mod(i-1,m)
     if j < 1
-        j = j + m
+        j += m
     end
     gamma = dot(DiffIterates[j]',DiffGrads[j])/(dot(DiffGrads[j]',DiffGrads[j]))
     r = gamma*q # Hk0 = gamma* I
@@ -112,27 +112,24 @@ function newtonCG(g,maxIter,objFunc,gradFunc,numDiff,w,X;k=nothing,nonOpt=false)
 
         if nonOpt
             if numDiff
-                g_v = numGrad(objFunc,w_s,X)
+                g_v,nmm = numGrad(objFunc,w_s,X)
                 nOE += 2*n
-                nMM += 2*n
             else
-                _,g_v = gradFunc(w_s,X)
+                _,g_v,nmm = gradFunc(w_s,X)
                 nOE += 1
                 nGE += 1
-                nMM += 2
             end
         else
-            Xw_s = X*w_s
-            nMM += 1
+            Xw_s = X*w_s; nMM += 1
             if numDiff
-                g_v = numGrad(objFunc,w_s,X,Xw_s,k=k)
+                g_v,nmm = numGrad(objFunc,w_s,X,Xw_s,k=k)
                 nOE += 2*n
             else
-                g_v = X'*gradFunc(Xw_s,konst=k)
-                nMM += 1
+                g_v,nmm = gradFunc(Xw_s,w_s,X,konst=k)
                 nGE += 1
             end
         end
+        nMM += nmm
         
         Bd = (g_v-g)/s 
         dTBd = dot(d',Bd)
