@@ -1,5 +1,0 @@
-method,lsType,momentumDirs,lsInit,lsInterp,nFref,lbfgsSize,ssMethod,ssLS,ssRelStop,ssOneDInit,derivCheck,numDiff,nonOpt
-0,3,1,1,1,1,20,1,0,1,1,0,0,0
-3,1,0,0,1,1,20,1,0,0,0,0,0,1
-3,1,0,0,1,1,20,1,0,1,1,0,0,0
-3,3,1,0,1,1,20,1,0,1,1,0,0,0
