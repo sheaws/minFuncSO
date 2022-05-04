@@ -2,7 +2,6 @@
 #  Algorithms from J. Nocedal and S.J. Wright, Numerical Optimization, 2nd ed.
 #  and from M. Schmidt, minFunc (2005)
 
-using Printf, LinearAlgebra
 include("misc.jl")
 
 # Raydan 1997 GBB algo
@@ -49,13 +48,23 @@ end
 
 # limited memory BFGS
 # could choose H_k^0 to be \gamma_k I where \gamma_k=(s_{k-1}^Ty_{k-1})/(y_{k-1}^Ty_{k-1}) 
-function lbfgs(g,i,DiffIterates,DiffGrads)
+function lbfgs(g,i,DiffIterates,DiffGrads;verbose=false,cautious=false,pdEps=1e-10)
     if i==1
-        return -g
+        return -g,I
     end    
 
     lBfgsSize=length(DiffIterates)
     m = min(lBfgsSize,i-1)
+    n = length(g)
+
+    #TODO 
+    j = mod(i-1,m)
+    if j < 1
+        j += m
+    end
+    gamma = dot(DiffIterates[j]',DiffGrads[j])/(dot(DiffGrads[j]',DiffGrads[j]))
+    Isubn = Matrix(I(n))
+
     rhos = zeros(m)
     alphas = zeros(m)
     q = g
@@ -64,29 +73,41 @@ function lbfgs(g,i,DiffIterates,DiffGrads)
         if k < 1
             k += m
         end
-        rhos[k] = 1 ./ dot(DiffGrads[k]',DiffIterates[k])
-        alphas[k] = rhos[k] * dot(DiffIterates[k],q)
-        q = q .- alphas[k] * DiffGrads[k]
+        yTs = dot(DiffGrads[k]',DiffIterates[k])
+        if cautious && yTs < pdEps
+            if verbose
+                @printf("lbfgs(i=%d): skipping %d pair because yTs=%f\n",i,j,yTs)
+            end
+        else
+            rhos[k] = 1 ./ yTs
+            alphas[k] = rhos[k] * dot(DiffIterates[k],q)
+            q = q .- alphas[k] * DiffGrads[k]
+        end
     end
     
-    n = length(g)
-    j = mod(i-1,m)
-    if j < 1
-        j += m
-    end
-    gamma = dot(DiffIterates[j]',DiffGrads[j])/(dot(DiffGrads[j]',DiffGrads[j]))
+    H = gamma*Isubn
     r = gamma*q # Hk0 = gamma* I
     
     for j in 1:m
         k = mod(i + j,m)
         if k < 1
-            k = k + m
+            k += m
         end
-        beta = rhos[k] * dot(DiffGrads[k]',r) 
-        r = r + DiffIterates[k]*(alphas[k]-beta)
+        yTs = dot(DiffGrads[k]',DiffIterates[k])
+        if cautious && yTs < pdEps
+            if verbose
+                @printf("lbfgs(i=%d): skipping %d pair because yTs=%f\n",i,j,yTs)
+            end
+        else
+            beta = rhos[k] * dot(DiffGrads[k]',r) 
+            r = r + DiffIterates[k]*(alphas[k]-beta)
+
+            Vk = Isubn .- rhos[k]*DiffGrads[k].*DiffIterates[k]'
+            H = Vk'*H*Vk+rhos[k]DiffIterates[k].*DiffIterates[k]'
+        end
     end
-    
-    return -r
+
+    return -r,H
 end
 
 # Line Search Newton-CG/ truncated Newton
@@ -156,4 +177,56 @@ function newtonCG(g,maxIter,objFunc,gradFunc,numDiff,w,X;k=nothing,nonOpt=false)
         r = r_new
     end
     return (z,maxIter,nOE,nGE,nMM)
+end
+
+function newton(g,H;verbose=false,eps=1e-4)
+    n = length(g)
+    B = 1.0I(n)
+    failedInv = false
+    d = -g
+
+    if n==1
+        B[1,1] = 1.0/H[1,1]
+    elseif n==2
+        detH = (H[1,1]*H[2,2]-H[1,2]*H[2,1])
+        if abs(detH) > eps
+            B = Matrix(B)
+            B[1,1] = H[2,2]
+            B[1,2] = -H[1,2]
+            B[2,1] = -H[2,1]
+            B[2,2] = H[1,1]
+            B = B .* (1.0/detH)
+            d=reshape(-B*g,n)
+        else
+            failedInv = true
+            if verbose
+                @printf("Newton(n=2): failed to calculate Newton direction: detH=%f\n",detH)
+            end
+        end
+    else
+        try
+            C = cholesky(H)
+            d = -C.U\(C.U'\g)
+        catch e
+            if isa(e,PosDefException)
+                if any(isnan,H) || any(isinf,H)
+                    failedInv = true
+                else
+                    lambdasH = eigen(H).values
+                    lambdasH = real(lambdasH) # Hessian symmetric so imaginary part should be rounding errors
+                    adjustment = maximum([-minimum(lambdasH),eps])
+                    H = H + Matrix(adjustment*I(n))
+                    d = -H\g
+                    if verbose
+                        @printf("Newton (n=%d): Cholesky decomp failed with H not pos def. Adjust: %f\n",n,adjustment)
+                    end
+                end
+            else
+                @printf("Newton (n=%d): Cholesky decomp failed with unhandled exception: %s\n",n,e)
+                failedInv = true
+            end
+        end
+    end
+
+    return (d,failedInv)
 end

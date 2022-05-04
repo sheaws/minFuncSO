@@ -25,7 +25,7 @@ function huberFPrimeFunc(losses)
 end
 
 # objective evaluation for linear composition problems
-function hhObjLinear(z,w,y;k=nothing)
+function objLinear(z,w,y;k=nothing)
     nMM = 0
     hinge = hingeFunc(y,z,k)
     hh = huberFunc(hinge)
@@ -35,25 +35,38 @@ end
 
 # f' evaluation for linear composition problems
 # arguments for gradient wrt iterates (outer loop):
-#  z = Xw --> g(w) = 
+#  z = Xw --> g(w) = X^T * fPrime
 # arguments for gradient wrt stepsizes (inner loop): 
-#  z = XDt, k = Xw --> g(t) = 
-function hhFPrimeLinear(z,w,y;k=nothing)
+#  z = XDt, k = Xw --> g(t) = (XD)^T * fPrime
+function fPrimeLinear(z,w,y;k=nothing)
     nMM = 0
     hinge = hingeFunc(y,z,k)
-    fPrime = -1 .* huberFPrimeFunc(hinge) 
+    fPrime = -y .* huberFPrimeFunc(hinge) 
     return (fPrime,nothing,nMM)
 end
 
 # gradient evaluation for linear composition problems
-function hhGradLinear(z,w,X,y;k=nothing)
-    fPrime,_,nMM = hhFPrimeLinear(z,w,y,k=k)
+function gradLinear(z,w,X,y;k=nothing)
+    fPrime,_,nMM = fPrimeLinear(z,w,y,k=k)
     g = X'*fPrime; nMM += 1
     return (g,nMM)
 end
 
+#f'' evaluation for linear composition problems
+function fDoublePrimeLinear(z,w,X,y;k=nothing)
+    fPrime,_,nMM = fPrimeLinear(z,w,y,k=k)
+    fPrimePrime = fPrime .* fPrime'
+    return (fPrimePrime,nMM)
+end
+
+function hessianLinear(z,w,X,y;k=nothing)
+    fDoublePrime,nMM = fDoublePrimeLinear(z,w,X,y,k=k)
+    H = X'*fDoublePrime*X; nMM += 2
+    return (H,nMM)
+end
+
 # objective and gradient evaluations for minFuncNonOpt to minimize f wrt t
-function hhObjAndGrad(t,D,w,X,y)
+function objAndGrad(t,D,w,X,y)
     nMM = 0
     w_new = w + D*t 
     z = X*w_new; nMM += 1
@@ -66,7 +79,7 @@ function hhObjAndGrad(t,D,w,X,y)
 end
 
 # objective and gradient evaluations for minFuncNonOpt to minimize f wrt w
-function hhObjAndGrad(w,X,y)
+function objAndGrad(w,X,y)
     nMM = 0
 	z = X*w; nMM += 1
     hinge = hingeFunc(y,z,nothing)
@@ -79,7 +92,7 @@ end
 
 # function value and zeros for gradient for minFuncNonOpt
 # (called by lsArmijoNonOpt)
-function hhObjAndNoGrad(w,X,y)
+function objAndNoGrad(w,X,y)
     nMM = 0
     (m,n) = size(X)
 	z = X*w; nMM += 1

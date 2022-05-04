@@ -1,4 +1,4 @@
-# Logistic regression
+# Linear regression
 # notation:
 #  X = features matrix, w = solution, y = labels {-1,+1}
 #  f = objective, g = gradient, f' = the (non-linear) part of the gradient
@@ -6,15 +6,17 @@
 include("misc.jl")
 
 # objective evaluation for linear composition problems
-#  note: w is not used for logistic regression but framework
+#  note: w is not used for linear regression but framework
 #   provides w for cases where it is used for regularization, etc.
 function objLinear(z,w,y;k=nothing)
     nMM = 0
+    m = length(z)
     if k == nothing
-        f = sum(log.(1 .+ exp.(-y.*z)))
+        f = norm(z-y,0.5)
     else
-        f = sum(log.(1 .+ exp.(-y.*(z.+k))))
+        f = norm((z+k)-y,0.5)
     end
+    f = f./ m
     return (f,nMM)
 end
 
@@ -23,16 +25,22 @@ end
 #  z = Xw --> g(w) = X^T * fPrime
 # arguments for gradient wrt stepsizes (inner loop): 
 #  z = XDt, k = Xw --> g(t) = (XD)^T * fPrime
-#  note: w is not used for logistic regression but framework
+#  note: w is not used for linear regression but framework
 #   provides w for cases where it is used for regularization, etc.
 function fPrimeLinear(z,w,y;k=nothing,epsilon=1e-12)
     nMM = 0
+    m = length(z)
     if k == nothing
-        yz = y .* z
+        fPrime = z-y
     else
-        yz = y .* (z+k)
+        fPrime = (z+k)-y
     end
-    fPrime = -y./(1 .+ exp.(yz))
+    denom = norm(fPrime,0.5)
+    signs = ones(m)
+    signs[vec(fPrime.<0.0)] .= -1.0
+    fPrime = (broadcast(abs,fPrime)./denom).^(-0.5) .* signs
+    fPrime = fPrime ./ m
+
     return (fPrime,nothing,nMM)
 end
 
@@ -45,53 +53,45 @@ end
 
 #f'' evaluation for linear composition problems
 function fDoublePrimeLinear(z,w,X,y;k=nothing)
-    #fPrime,_,nMM = logisticFPrimeLinear(z,w,y,k=k)
     nMM = 0
-
-    if k==nothing
-        expZ=exp.(-y.*z)
+    m = length(z)
+    if k == nothing
+        fPrimePrime = z-y
     else
-        expZ=exp.(-y.*(z+k))
+        fPrimePrime = (z+k)-y
     end
-    sumExpZ = sum(expZ)
-    mult = 1/ sumExpZ
+    normLHalf = norm(fPrimePrime,0.5)
+    fPrimePrime = diagm((broadcast(abs,fPrimePrime)).^(-2).*normLHalf.*(-0.25))
+    fPrimePrime ./ m
 
-    fPrimePrime = mult .* diagm(vec(expZ)) + mult^2 .* expZ.*expZ'; nMM += 2
     return (fPrimePrime,nMM)
 end
 
 function hessianLinear(z,w,X,y;k=nothing)
-    fDoublePrime,nMM = fDoublePrimeLinear(z,w,X,y,k=k)
-    H = X'*fDoublePrime*X; nMM += 2
+    nMM = 0
+    (m,n) = size(X)
+    H = X'*X; nMM += m
     return (H,nMM)
 end
 
+#### TODO #######
 # objective and gradient evaluations for minFuncNonOpt to minimize f wrt t
 function objAndGrad(t,D,w,X,y)
     nMM = 0
     w_new = w + D*t
-    z = y.*(X*w_new); nMM += 1
-	f = sum(log.(1 .+ exp.(-z))) 
-	g = -(X*D)'*(y./(1 .+ exp.(z))); nMM += 1
+    z = X*w_new; nMM += 1
+	f = objLinear(z,w_new,y)
+	g = -(X*D)'*fPrimeLinear(z,w_new,y); nMM += 1
 	return (f,g,nMM)
 end
 
 # objective and gradient evaluations for minFuncNonOpt to minimize f wrt w
 function objAndGrad(w,X,y)
-    nMM = 0
-	yXw = y.*(X*w); nMM += 1
-	f = sum(log.(1 .+ exp.(-yXw))) 
-	g = -X'*(y./(1 .+ exp.(yXw))); nMM += 1
-	return (f,g,nMM)
+	return (0.0,nothing,0)
 end
 
 # function value and zeros for gradient for minFuncNonOpt
 # (called by lsArmijoNonOpt)
 function objAndNoGrad(w,X,y)
-    nMM = 0
-    (m,n) = size(X)
-	yXw = y.*(X*w); nMM += 1
-	f = sum(log.(1 .+ exp.(-yXw)))
-	g = zeros(m,1)
-	return (f,g,nMM)
+	return (0.0,nothing,0)
 end

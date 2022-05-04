@@ -6,15 +6,21 @@ include("descentDir.jl")
 function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIter=100,maxLsIter=50,maxTimeInSec=600,optTol=1e-5,
  progTol=1e-9,lsInit=0,nFref=1,lsType=0,c1=1e-4,c2=0.9,lsInterpType=0,lBfgsSize=30,momentumDirections=0,
  ssMethod=0,ssLS=0,ssRelStop=true,ssOneDInit=true,derivativeCheck=false,numDiff=false,nonOpt=false,verbose=false,
- funObjForT=nothing,funObj=nothing,funObjNoGrad=nothing)
+ funObjForT=nothing,funObj=nothing,funObjNoGrad=nothing,XXT=nothing,fPrimePrimeFunc=nothing,hessFunc=nothing,
+ maxFailHessInv=2,lbfgsCautious=false,eigDecomp=false)
     (m,n)=size(X)
 	nObjEvals = 0
 	nGradEvals = 0
 	nIter = 1
 	totalLsIter = 0
 	nMatMult = 0
+    gradNorm = NaN
+    normD = NaN
+    lambdaHMin = NaN
+    lambdaHMax = NaN
 
     time_start = time_ns() # Start timer
+    time_end = time_start
     fValues = zeros(maxIter,1) # fValues by iterations
     tValues = zeros(maxIter,1) # total time taken in seconds
 
@@ -22,6 +28,7 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
     # gradients get calculated once at the start and then once per iter outside LS loop	
     w = w0
     Xw = fill(0.0, m)
+    H = zeros((n,n))
     if nonOpt
         if numDiff
             f,_,nmm = funObjNoGrad(w,X); nMatMult += nmm
@@ -42,10 +49,14 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
         else
             g,nmm = gradFunc(Xw,w,X,konst=konst); nMatMult += nmm
             nGradEvals += 1
-        end        
+        end
+        if method == 5 && fPrimePrimeFunc!=nothing && hessFunc!=nothing
+            H,nMM = hessFunc(Xw,w,X,konst=konst)
+        end
     end
     fValues[1,1] = f
-    tValues[1,1] = (time_ns()-time_start)/1.0e9
+    time_end = time_ns()
+    tValues[1,1] = (time_end-time_start)/1.0e9
 	
 	if derivativeCheck
     	if numDiff
@@ -68,7 +79,8 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
 	# check initial point optimality
 	gradNorm = norm(g,Inf)
 	if gradNorm < optTol
-    	return (w0,f,nObjEvals,nGradEvals,nIter,totalLsIter,nMatMult,fValues,tValues)
+    	return (w0,f,nObjEvals,nGradEvals,nIter,totalLsIter,nMatMult,fValues,tValues,gradNorm,NaN,
+            normD,lambdaHMin,lambdaHMax,1.0)
     end
     
     if verbose
@@ -77,6 +89,8 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
     
     # step size, descent direction, directional derivative
     t = 1.0
+    ts = []
+    minT = t
     d = -g
     gTd = dot(g,d)
     
@@ -90,6 +104,7 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
     DiffIterates = [zeros(n,1) for _ in 1:lBfgsSize]
     DiffGrads = [zeros(n,1) for _ in 1:lBfgsSize] 
     XDiffIterates = [zeros(m,1) for _ in 1:lBfgsSize] # assumes lbfgsSize >= momentumDirections
+    XDiffGrads = [zeros(m,1) for _ in 1:lBfgsSize]
 
 	lsDone = false 	
 	alpha = 1.0 # for BB
@@ -98,6 +113,9 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
 	w_prev = w
 	d_prev = d
 	Xw_prev = Xw
+    H_prev = H
+    nFailedInv = 0 # for Newton
+    t_prev = t # for Lipschitz linesearch
 
 	while nIter < maxIter
         # compute descent direction
@@ -110,7 +128,8 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
         elseif method == 2 # CG
             d = cg(g,g_prev,nIter,d_prev,optTol)
         elseif method == 3 # l-BFGS
-            d = lbfgs(g,nIter,DiffIterates,DiffGrads)
+            d,H = lbfgs(g,nIter,DiffIterates,DiffGrads,cautious=lbfgsCautious)
+            #d,H = lbfgs(g,nIter,DiffIterates,DiffGrads,skip=true) #HERE
         elseif method == 4 # Newton-CG
             if nonOpt
                 d,cgIter,nOE,nGE,nMM = newtonCG(g,(maxIter-nIter-1),funObjNoGrad,funObj,numDiff,
@@ -122,6 +141,12 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
             nObjEvals += nOE
             nGradEvals += nGE
             nMatMult += nMM
+        elseif method == 5 # Newton
+            d,failedInv = newton(g,H)
+            if failedInv
+                nFailedInv += 1
+                d=-g
+            end
     	end
     	
     	# calculate truncated Newton as a second direction. counts towards maxIters
@@ -138,9 +163,14 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
             nMatMult += nMM
             cgIter = cgIter + nIterTN
     	end
+
+        # calculate (diagonal) Adagrad as a second direction.
+        if lsType==7
+            dAdagrad = -sqrt(Diagonal(g .* g'))*g # optimized for Diagonal and no mat-vec mult
+        end
     	
     	# if doing subspace search, normalize descent direction
-    	if lsType==3 || lsType==4 || lsType==5
+    	if lsTypeIsSO(lsType)
         	colNorm = norm(d,2)
         	if colNorm > 1e-4
                 d = d./colNorm
@@ -160,6 +190,7 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
                 nIter,norm(w_prev,2),norm(w,2),gTd_prev,gTd,f_prev,f,dot(g',g),dot(d',d),normKonst) 
         end
     	
+        t_prev = t
     	t = getLSInitStep(lsInit,nIter,f,f_prev,gTd,verbose=verbose) # get initial step size
     	
     	Xd = fill(0.0, m)
@@ -180,78 +211,127 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
         nMatMult += nmm
         nObjEvals += 1
         
-        # update the list of most recent fVals and get back the largest f value stored in history
-        #  (and its index into oldFVals)
-    	fref,frefInd = getAndSetLSFref(nFref,oldFvals,nIter,f_prev)  	    	
+        # update f values in memory and get reference f value (fref). fref could be largest in 
+        #  recent history (getAndSetLSFref) or ever encountered (getAndSetLSFref2)
+    	fref,frefInd = getAndSetLSFref2(nFref,oldFvals,nIter,f_prev)  	    	
     	    	 	    	    	
-    	# line search / subspace search
+    	# set step sizes via line search / subspace search
     	lsFailed = false
-    	if lsType==0
+    	if nIter==1 || lsType==0 # Armijo
         	if nonOpt
     	       (t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
-                    lsArmijo(funObjNoGrad,X,Xw_prev,Xd,w_prev,t,c1,f,f_prev,fref,g,gTd,d,
+                    lsArmijo(funObjNoGrad,funObj,X,Xw_prev,Xd,w_prev,t,c1,f_prev,fref,g,gTd,d,
                     verbose=verbose,maxLsIter=maxLsIter,nonOpt=true)
         	else
             	(t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
-                    lsArmijo(objFunc,X,Xw_prev,Xd,w_prev,t,c1,f,f_prev,fref,g,gTd,d,konst=konst,
-                    verbose=verbose,maxLsIter=maxLsIter)
+                    lsArmijo(objFunc,fPrimeFunc,X,Xw_prev,Xd,w_prev,t,c1,f_prev,fref,g,gTd,d,
+                    konst=konst,verbose=verbose,maxLsIter=maxLsIter)
             end
-        elseif lsType==1
+        elseif lsType==1 # lsWolfe
             if nonOpt
                 (t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
-                    lsWolfe(funObjNoGrad,funObj,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,gTd,d,
+                    lsWolfe(funObjNoGrad,funObj,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f_prev,g,gTd,d,
                     verbose=verbose,maxLsIter=maxLsIter,nonOpt=true)
             else            
                 (t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
-                    lsWolfe(objFunc,fPrimeFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f,f_prev,g,gTd,d,
+                    lsWolfe(objFunc,fPrimeFunc,numDiff,X,Xw_prev,Xd,w_prev,c1,c2,f_prev,g,gTd,d,
                     konst=konst,verbose=verbose,maxLsIter=maxLsIter)
             end
-        elseif lsType==3 || lsType==4 || lsType==5
+        elseif lsType==6 # Lipschitz
+            (t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
+                lsLipschitz(objFunc,fPrimeFunc,X,Xw_prev,Xd,w_prev,t_prev,f_prev,fref,g,gTd,d,
+                konst=konst,verbose=verbose,maxLsIter=maxLsIter)
+        elseif lsTypeIsSO(lsType)
             # set up the matrix of directions in the case of subspace searches
-            k = 2
-            if lsType==3 || lsType==4
+            if lsType==8 || lsType==10
+                k = 3
+            elseif lsType==2 || lsType==3 || lsType==4
                 k = min(momentumDirections,nIter-1) +1
+            elseif lsType==5 || lsType==7 || lsType==9
+                k = 2
             end
             D = zeros(n,k)
             XD = zeros(m,k)
-            D[:,1] = d
-            XD[:,1] = Xd
-            for a in 2:k
-                if lsType==3 || lsType==4
-                    D[:,a] = DiffIterates[mod(nIter-2,lBfgsSize)+1]
-                    XD[:,a] = XDiffIterates[mod(nIter-2,lBfgsSize)+1]
-                elseif lsType==5
-                    D[:,a] = dTN
-                    XD[:,a] = X*dTN; nMatMult += 1
+            if lsType == 5
+                D[:,1] = d
+                XD[:,1] = Xd
+                D[:,2] = dTN
+                XD[:,2] = X*dTN; nMatMult += 1
+            elseif lsType == 7
+                D[:,1] = d
+                XD[:,1] = Xd
+                D[:,2] = dAdagrad
+                XD[:,2] = X*dAdagrad; nMatMult += 1
+            elseif lsType==8 # 3-term SO on extrapolated point
+                D[:,1] = d
+                XD[:,1] = Xd
+                D[:,2] = DiffIterates[mod(nIter-2,lBfgsSize)+1]
+                XD[:,2] = XDiffIterates[mod(nIter-2,lBfgsSize)+1]
+                D[:,3] = DiffGrads[mod(nIter-2,lBfgsSize)+1]
+                XD[:,3] = XDiffGrads[mod(nIter-2,lBfgsSize)+1]
+            elseif lsType==9 || lsType==10
+                D[:,1] = d
+                XD[:,1] = Xd
+                D[:,2] = -g
+                XD[:,2] = -X*g; nMatMult += 1
+                if lsType==10
+                    D[:,3] = DiffIterates[mod(nIter-2,lBfgsSize)+1]
+                    XD[:,3] = XDiffIterates[mod(nIter-2,lBfgsSize)+1]
+                end
+            else # lsType==2 || lsType==3 || lsType==4 (momentum as secondary directions)
+                D[:,1] = d
+                XD[:,1] = Xd
+            
+                for a in 2:k                     
+                    D[:,a] = DiffIterates[mod(nIter-a,lBfgsSize)+1]
+                    XD[:,a] = XDiffIterates[mod(nIter-a,lBfgsSize)+1]
                 end
             end
-            
-            if lsType==3 || lsType==5 # call subproblem solver that is optimized for linear structure
+        
+            # solve subproblem
+            if lsType==2 # call mdWolfe for subproblem
+                if lsType == 2
+                    fPrime,_,nMM = fPrimeFunc(Xw,w); nMatMult += nMM; nGradEvals += 1
+                    gTdVec = transpose(fPrime'*XD)
+                end
+
+                if nonOpt
+                    (ts,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = mdWolfe(funObjNoGrad,funObj,numDiff,X,Xw_prev,
+                        XD,w_prev,c1,c2,f,f_prev,g,gTdVec,D,verbose=verbose,maxLsIter=maxLsIter,nonOpt=nonOpt)
+                else
+                    (ts,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = mdWolfe(objFunc,fPrimeFunc,numDiff,X,Xw_prev,
+                        XD,w_prev,c1,c2,f,f_prev,g,gTdVec,D,konst=konst,verbose=verbose,maxLsIter=maxLsIter,
+                        nonOpt=nonOpt)
+                end
+            elseif (3<=lsType==3 && lsType<=5) || (7<=lsType  && lsType<=10) # call minFunc for subproblem         
+                if lsType==4
+                    nonOpt = true
+                    of = funObjNoGrad
+                    ff = funObj
+                    gf = funObj
+                else
+                    nonOpt = false
+                    of = objFunc
+                    ff = fPrimeFunc
+                    gf = gradFunc
+                end
+                
                 if verbose
-                    @printf("  before calling lsDDir: norm(w,2)=%f, norm(w_prev,2)=%f\n",
-                        norm(w,2),norm(w_prev,2))
+                    @printf("  before calling lsDDir (nonOpt=%d): norm(w,2)=%f, norm(w_prev,2)=%f\n",
+                        nonOpt,norm(w,2),norm(w_prev,2))
                 end          
                 (ts,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) =
-                    lsDDir(objFunc,fPrimeFunc,gradFunc,XD,D,X,Xw_prev,w_prev,f_prev,g,nIter,gradNorm,gTd,c1,c2,
+                    lsDDir(of,ff,gf,XD,D,X,Xw_prev,w_prev,f_prev,g,nIter,gradNorm,gTd,c1,c2,
                     ssMethod=ssMethod,ssLS=ssLS,verbose=verbose,maxLsIter=maxLsIter,relativeStopping=ssRelStop,
-                    oneDInit=ssOneDInit)               
+                    oneDInit=ssOneDInit,nonOpt=nonOpt,funObjForT=funObjForT,fPrimePrimeFunc=fPrimePrimeFunc,
+                    hessFunc=hessFunc)               
                 if verbose
                     @printf("  after calling lsDDir: norm(w,2)=%f, norm(w_prev,2)=%f\n",
                         norm(w,2),norm(w_prev,2))
+                    if lsFailed
+                        @printf("method=%d, lsType=%d: lsFailed at nIter=%d\n",method,lsType,nIter)
+                    end
                 end
-            elseif lsType==4 # call subproblem solver that is not optimized for linear structure
-                if verbose
-                    @printf("  before calling lsDDir(nonOpt): norm(w,2)=%f, norm(w_prev,2)=%f\n",norm(w,2),
-                        norm(w_prev,2))
-                end
-                (ts,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) =
-                    lsDDir(funObjNoGrad,funObj,funObj,XD,D,X,Xw_prev,w_prev,f_prev,g,nIter,gradNorm,gTd,c1,c2,
-                    ssMethod=ssMethod,ssLS=ssLS,verbose=verbose,maxLsIter=maxLsIter,relativeStopping=ssRelStop,
-                    oneDInit=ssOneDInit,nonOpt=true,funObjForT=funObjForT)
-                if verbose
-                    @printf("  after calling lsDDir(nonOpt): norm(w,2)=%f, norm(w_prev,2)=%f\n",norm(w,2),
-                        norm(w_prev,2))
-                end            
             end
         else
             if verbose
@@ -259,11 +339,11 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
             end
             if nonOpt
     	       (t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
-                    lsArmijo(funObjNoGrad,X,Xw_prev,Xd,w_prev,t,c1,f,f_prev,fref,g,gTd,d,
+                    lsArmijo(funObjNoGrad,funObj,X,Xw_prev,Xd,w_prev,t,c1,f_prev,fref,g,gTd,d,
                     verbose=verbose,maxLsIter=maxLsIter,nonOpt=true)
         	else
             	(t,f,w,Xw,lsFailed,nLsIter,nOE,nGE,nMM) = 
-                    lsArmijo(objFunc,X,Xw_prev,Xd,w_prev,t,c1,f,f_prev,fref,g,gTd,d,konst=konst,
+                    lsArmijo(objFunc,fPrimeFunc,X,Xw_prev,Xd,w_prev,t,c1,f_prev,fref,g,gTd,d,konst=konst,
                     verbose=verbose,maxLsIter=maxLsIter)
             end
     	end
@@ -272,7 +352,8 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
     	nGradEvals += nGE
         nMatMult += nMM
         
-    	currTs = (time_ns()-time_start)/1.0e9
+        time_end = time_ns()
+    	currTs = (time_end-time_start)/1.0e9
     	# CG iterations in truncated Newton counts towards total interations
     	if method==4 || lsType==5 || ssMethod==4
         	idx = nIter
@@ -293,7 +374,7 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
         	if verbose
                 @printf("Line search failed at %dth iter %dth lsIter, t=%f, method=%d, lsType=%d, f=%f.\n",
                     nIter,nLsIter,t,method,lsType,f)
-                if lsType==3 || lsType==4 || lsType==5
+                if lsTypeIsSO(lsType)
                     @printf("  lsType=%d, ts: %s\n",lsType,string(ts))
                 end
             end
@@ -304,13 +385,13 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
             if verbose
                 @printf("method=%d, lsType=%d: invalid value at %dth iter. f_prev=%f, f=%f\n",
                     method,lsType,nIter,f_prev,f)
-                if lsType==3 || lsType==4 || lsType==5
+                if lsTypeIsSO(lsType)
                     @printf("  ts: %s\n",string(ts))
                 end 
             end
             f = f_prev
             w = w_prev 
-            if lsType==3 || lsType==4 || lsType==5
+            if lsTypeIsSO(lsType)
                 ts = ts .* 0.0
             end
             break
@@ -337,16 +418,28 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
             end
         end
         nMatMult += nMM        
-        
+
+        H_prev = H
+        # no nonOpt for norm2r_new
+        if method==5 && fPrimePrimeFunc!=nothing && hessFunc!=nothing
+            H,nMM = hessFunc(Xw,w,X,konst=konst)
+        end
+        nMatMult += nMM
+
         # update memory
         if verbose
             @printf("+++++ before updateDiffs, 1-norms: w_prev=%f, w=%f.\n",norm(w_prev,1),
                 norm(w,1))
         end
         
-        if lsType==3 || lsType==4 || lsType==5
-        	nmm = updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates,
-            	normalizeColumns=true,calcXDiffIterates=true)
+        if lsTypeIsSO(lsType)
+            if lsType==8
+                nmm = updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates,
+                	XDiffGrads=XDiffGrads,normalizeColumns=true,calcXDiffIterates=true, calcXDiffGrads=true)
+            else
+            	nmm = updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates,
+                	normalizeColumns=true,calcXDiffIterates=true)
+            end
         else
             nmm = updateDiffs(nIter,lBfgsSize,g_prev,g,w_prev,w,X,DiffIterates,DiffGrads,XDiffIterates)
         end
@@ -360,11 +453,12 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
 
     	# check optimality conditions   	
     	gradNorm = norm(g,Inf)
+        normD = norm(d,Inf)
     	if gradNorm < optTol 
         	if verbose
                 @printf("method=%d, lsType=%d: Optimality conditions met at %dth iter. 
                     gradNorm=%f, f=%f\n",method,lsType,nIter,gradNorm,f)
-                if lsType==3 || lsType==4 || lsType==5
+                if lsTypeIsSO(lsType)
                     @printf("  ts: %s\n",string(ts))
                 end    
             end
@@ -372,35 +466,92 @@ function minFuncSO(objFunc,fPrimeFunc,gradFunc,w0,X;konst=nothing,method=1,maxIt
         end
         
         # check for lack of progress on objective value
-        diffF = abs(fref-f)
-        if diffF < progTol
+        diffF = fref - f
+        if diffF < progTol 
             if verbose
                 @printf("method=%d, lsType=%d: Stopped making progress met at %dth iter. 
                     fref=%.12f, f=%.12f, diff=%.12f\n",method,lsType,nIter,fref,f,diffF)
-                if lsType==3 || lsType==4 || lsType==5
+                if lsTypeIsSO(lsType)
                     @printf("  ts: %s\n",string(ts))
                 end 
             end
             break
         end
-    	
-    	nIter += 1        
-        if currTs >= maxTimeInSec
+
+        # check that step sizes have not become too small
+        minT = t
+        if lsTypeIsSO(lsType) && length(ts)>0
+            minT = min(minT,maximum(ts))
+        end
+        if abs(minT) < 1e-12
+            if verbose
+                @printf("method=%d, lsType=%d, nIter=%d, t is too small: f=%.5f, fref=%.5f, t=%f\n",
+                    method,lsType,nIter,f,fref,minT)
+            end
             break
-        end        
+        end
+    	      
+        if currTs >= maxTimeInSec
+            if verbose
+                @printf("method=%d, lsType=%d, nIter=%d, time limit reached: f=%.5f, fref=%.5f, t=%f\n",
+                    method,lsType,nIter,f,fref,minT)
+            end
+            break
+        end
+        
+        if nFailedInv >= maxFailHessInv
+            if verbose
+                @printf("method=%d, lsType=%d, nIter=%d, max failed Hessian inversion reached: failed=%d, f=%.5f, fref=%.5f, t=%f\n",
+                    method,lsType,nIter,nFailedInv,f,fref,minT)
+            end
+            break
+        end
+        nIter += 1  
 	end
 	
 	if nIter>=maxIter
     	if verbose
-        	@printf("Maximum iterations (%d) reached\n",nIter)
+            @printf("method=%d, lsType=%d, nIter=%d, max nIter reached: f=%.5f, fref=%.5f, t=%f\n",
+                    method,lsType,nIter,f,fref,minT)
     	end         
 	end
 	
     diffIter = maxIter-nIter
-    for j in 1:diffIter-1
-        fValues[nIter+1+j,1] = f
-        tValues[nIter+1+j,1] = (time_ns()-time_start)/1.0e9
+    for j in 1:diffIter
+        fValues[nIter+j,1] = NaN
+        tValues[nIter+j,1] = NaN
     end  
 
-	return (w,f,nObjEvals,nGradEvals,nIter,totalLsIter,nMatMult,fValues,tValues)
+    lambdaHMin = 0.0
+    lambdaHMax = 0.0
+    if eigDecomp && methodHasPrecond(method)
+        try
+            lambdasH = eigen(H).values
+            try
+                lambdaHMin = minimum(lambdasH)
+                lambdaHMax = maximum(lambdasH)
+                if verbose
+                    @printf("Eigen decomp results in %d eigenvalues for method=%d, lsType=%d.\n",
+                        length(lambdasH),method,lsType)
+                end
+            catch e
+                if verbose
+                    @printf("minimum/ maximum failed for method=%d, lsType=%d with error %s.\n",
+                        method,lsType,e)
+                end
+            end
+        catch e
+            if verbose
+                @printf("Eigen decomp failed for method=%d, lsType=%d with error %s.\n",
+                    method,lsType,e)
+            end
+        end
+    end
+
+    if verbose && method==5
+        @printf("n=%d: nFailedInv = %d out of %d\n",n,nFailedInv,nIter)
+    end
+
+	return (w,f,nObjEvals,nGradEvals,nIter,totalLsIter,nMatMult,fValues,tValues,gradNorm,gTd,
+        normD,lambdaHMin,lambdaHMax,minT)
 end
