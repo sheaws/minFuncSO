@@ -7,7 +7,7 @@ julia ./example_minFuncSO.jl --help
 usage: example_minFuncSO.jl [--ds DS] [--linReg] [--linRegLHalf]
                         [--logReg] [--logRegL2] [--hh] [-h]
 
-optional arguments:
+optional arguments:  
   --ds DS        a comma-separated list of datasets to run (default:"") 
   --linReg       set objective to linear regression 
   --linRegLHalf  set objective to linear regression using a p=1/2 norm 
